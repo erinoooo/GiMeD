@@ -24,8 +24,11 @@ jobs:
       - run: pip install pyinstaller
       - run: bash build.sh
 
+      - name: Rename binary
+        run: mv dist/gimed dist/gimed-linux-x86_64
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/gimed
+          files: dist/gimed-linux-x86_64
           token: ${{ secrets.PAT }}
