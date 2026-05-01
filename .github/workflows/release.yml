@@ -22,10 +22,9 @@ jobs:
           python-version: '3.11'
 
       - run: pip install pyinstaller
-      - run: bash build.sh
 
-      - name: Rename binary
-        run: mv dist/gimed dist/gimed-linux-x86_64
+      - name: Build binary
+        run: pyinstaller --onefile --name gimed-linux-x86_64 gimed/__main__.py
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
