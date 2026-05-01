@@ -91,11 +91,11 @@ def run(cmd, check=True, capture=False):
 
 
 def apt_install(*packages):
-    """Install packages via apt-get non-interactively."""
+    """Install packages via apt non-interactively."""
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
     subprocess.run(
-        ["apt-get", "install", "-y", "--no-install-recommends"] + list(packages),
+        ["apt", "install", "-y"] + list(packages),
         check=True,
         env=env,
     )
@@ -104,7 +104,7 @@ def apt_install(*packages):
 def apt_update():
     env = os.environ.copy()
     env["DEBIAN_FRONTEND"] = "noninteractive"
-    subprocess.run(["apt-get", "update", "-y"], check=True, env=env)
+    subprocess.run(["apt", "update", "-y"], check=True, env=env)
 
 
 def systemctl(action, service):

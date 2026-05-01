@@ -70,7 +70,7 @@ if [[ "$id_lower" != "ubuntu" && "$id_lower" != "debian" && \
 fi
 success "Detected: $PRETTY_NAME"
 
-command -v curl &>/dev/null || apt-get install -y curl -qq
+command -v curl &>/dev/null || apt install -y curl
 
 info "Downloading GiMeD binary ($BINARY_NAME)..."
 tmp="$(mktemp)"
