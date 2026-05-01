@@ -132,7 +132,7 @@ main() {
     echo ""
     sleep 1
 
-    exec "$INSTALL_PATH"
+    exec "$INSTALL_PATH" </dev/tty
 }
 
 main "$@"
