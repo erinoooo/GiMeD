@@ -9,13 +9,13 @@ GiMeD automatically installs and configures a desktop environment, XRDP, and Wir
 ## Single-liner install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/gimed/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/erinoooo/gimed/main/install.sh | sudo bash
 ```
 
 or with `wget`:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/YOUR_ORG/gimed/main/install.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/erinoooo/gimed/main/install.sh | sudo bash
 ```
 
 That's it. The script will:
@@ -83,7 +83,7 @@ Ubuntu-based distros (Mint, Pop!_OS, etc.) should work too.
 ## Building from source
 
 ```bash
-git clone https://github.com/YOUR_ORG/gimed
+git clone https://github.com/erinoooo/gimed
 cd gimed
 pip install pyinstaller
 bash build.sh
