@@ -4,7 +4,6 @@ GiMeD WireGuard installation and configuration
 
 import os
 import subprocess
-import ipaddress
 
 from gimed.system import apt_install, run, systemctl, command_exists
 from gimed.ui import print_step, print_success, print_warning, print_info, spinner
@@ -16,12 +15,32 @@ CLIENT_CONF = "/root/gimed-client.conf"
 
 def install_wireguard(distro):
     with spinner("Installing WireGuard"):
-        apt_install("wireguard", "wireguard-tools")
+        apt_install("wireguard", "wireguard-tools", "iptables")
 
-    # Enable IP forwarding persistently
+    # On Ubuntu 24.04 / EC2, ensure iptables-legacy is used so wg-quick
+    # PostUp/PostDown rules work. nftables is the default but wg-quick
+    # uses iptables syntax.
+    _fix_iptables()
     _enable_ip_forwarding()
 
     print_success("WireGuard installed")
+
+
+def _fix_iptables():
+    """Switch to iptables-legacy if nftables is the current default."""
+    try:
+        # Check if update-alternatives knows about iptables
+        result = subprocess.run(
+            ["update-alternatives", "--query", "iptables"],
+            capture_output=True, text=True
+        )
+        if "iptables-legacy" in result.stdout:
+            run(["update-alternatives", "--set", "iptables",
+                 "/usr/sbin/iptables-legacy"], check=False)
+            run(["update-alternatives", "--set", "ip6tables",
+                 "/usr/sbin/ip6tables-legacy"], check=False)
+    except Exception:
+        pass
 
 
 def _enable_ip_forwarding():
@@ -32,19 +51,16 @@ def _enable_ip_forwarding():
 
 
 def _gen_keypair():
-    """Generate a WireGuard private/public keypair. Returns (private, public)."""
     priv = subprocess.check_output(["wg", "genkey"]).decode().strip()
     pub  = subprocess.check_output(["wg", "pubkey"], input=priv.encode()).decode().strip()
     return priv, pub
 
 
 def _detect_default_interface():
-    """Detect the default network interface (eth0, ens3, etc.)."""
     try:
         result = subprocess.check_output(
             ["ip", "route", "show", "default"], text=True
         )
-        # "default via x.x.x.x dev eth0 ..."
         parts = result.split()
         idx = parts.index("dev")
         return parts[idx + 1]
@@ -53,9 +69,6 @@ def _detect_default_interface():
 
 
 def configure_wireguard(server_vpn_ip, client_vpn_ip, listen_port=51820):
-    """
-    Generate keypairs, write server wg0.conf, return client config dict.
-    """
     os.makedirs(WG_DIR, mode=0o700, exist_ok=True)
 
     with spinner("Generating WireGuard keypairs"):
@@ -64,19 +77,14 @@ def configure_wireguard(server_vpn_ip, client_vpn_ip, listen_port=51820):
 
     iface = _detect_default_interface()
 
+    # Use single-line PostUp/PostDown — wg-quick handles them line by line
     server_conf = f"""\
 [Interface]
 Address = {server_vpn_ip}/24
 ListenPort = {listen_port}
 PrivateKey = {server_priv}
-
-# NAT masquerading so VPN clients can reach the server
-PostUp   = iptables -A FORWARD -i wg0 -j ACCEPT; \\
-           iptables -A FORWARD -o wg0 -j ACCEPT; \\
-           iptables -t nat -A POSTROUTING -o {iface} -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; \\
-           iptables -D FORWARD -o wg0 -j ACCEPT; \\
-           iptables -t nat -D POSTROUTING -o {iface} -j MASQUERADE
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o {iface} -j MASQUERADE
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o {iface} -j MASQUERADE
 
 [Peer]
 # GiMeD client
@@ -88,7 +96,6 @@ AllowedIPs = {client_vpn_ip}/32
         f.write(server_conf)
     os.chmod(WG_CONF, 0o600)
 
-    # Get public IP for client config endpoint
     public_ip = _get_public_ip()
 
     client_conf_text = f"""\
@@ -106,9 +113,7 @@ PersistentKeepalive = 25
 
     with spinner("Starting WireGuard"):
         systemctl("enable", "wg-quick@wg0")
-        systemctl("start",  "wg-quick@wg0")
-
-    print_success(f"WireGuard running — server VPN IP: {server_vpn_ip}")
+        _start_wireguard()
 
     return {
         "text":       client_conf_text,
@@ -119,8 +124,78 @@ PersistentKeepalive = 25
     }
 
 
+def _start_wireguard():
+    """Start WireGuard, with a helpful error message if it fails."""
+    try:
+        systemctl("start", "wg-quick@wg0")
+        print_success("WireGuard started successfully")
+    except subprocess.CalledProcessError:
+        # Capture journal output for diagnosis
+        journal = subprocess.run(
+            ["journalctl", "-u", "wg-quick@wg0", "-n", "20", "--no-pager"],
+            capture_output=True, text=True
+        ).stdout.strip()
+
+        print_warning("WireGuard failed to start. Checking logs...")
+        print_info("")
+
+        # Common cause on EC2/Ubuntu 24.04: iptables nat table missing
+        if "Table does not exist" in journal or "iptables" in journal.lower():
+            print_warning("iptables NAT module not available. Trying nftables fallback...")
+            _patch_conf_to_nftables()
+            try:
+                systemctl("start", "wg-quick@wg0")
+                print_success("WireGuard started with nftables")
+                return
+            except subprocess.CalledProcessError:
+                pass
+
+        # Print last journal lines so user can see what went wrong
+        print_warning("WireGuard service log:")
+        for line in journal.splitlines()[-10:]:
+            print_info(f"  {line}")
+        print_warning("WireGuard did not start. The config is saved — you can start it manually:")
+        print_info("  sudo systemctl start wg-quick@wg0")
+        print_info("  sudo journalctl -u wg-quick@wg0 -n 30")
+
+
+def _patch_conf_to_nftables():
+    """Replace iptables PostUp/PostDown with nftables equivalents."""
+    with open(WG_CONF) as f:
+        content = f.read()
+
+    iface = _detect_default_interface()
+
+    # Replace PostUp/PostDown with nftables syntax
+    import re
+    content = re.sub(r"PostUp = .*", (
+        f"PostUp = nft add table ip nat; "
+        f"nft add chain ip nat postrouting {{ type nat hook postrouting priority 100 \\; }}; "
+        f"nft add rule ip nat postrouting oifname \"{iface}\" masquerade; "
+        f"nft add table ip filter; "
+        f"nft add chain ip filter forward {{ type filter hook forward priority 0 \\; }}; "
+        f"nft add rule ip filter forward iifname \"wg0\" accept; "
+        f"nft add rule ip filter forward oifname \"wg0\" accept"
+    ), content)
+    content = re.sub(r"PostDown = .*", (
+        "PostDown = nft flush table ip nat; nft delete table ip nat; "
+        "nft flush chain ip filter forward"
+    ), content)
+
+    with open(WG_CONF, "w") as f:
+        f.write(content)
+    os.chmod(WG_CONF, 0o600)
+
+    # Also install nftables if missing
+    try:
+        apt_install("nftables")
+        run(["systemctl", "enable", "nftables"], check=False)
+        run(["systemctl", "start", "nftables"], check=False)
+    except Exception:
+        pass
+
+
 def _get_public_ip():
-    """Try to detect the server's public IP."""
     methods = [
         ["curl", "-s", "--max-time", "5", "https://api.ipify.org"],
         ["curl", "-s", "--max-time", "5", "https://ifconfig.me"],
@@ -136,16 +211,13 @@ def _get_public_ip():
 
 
 def output_client_config(wg_config, mode):
-    """Output client config as terminal print, file, QR, or all."""
     text  = wg_config["text"]
     modes = ["terminal", "file", "qr"] if mode == "all" else [mode]
 
     if "terminal" in modes:
         _print_client_config(text)
-
     if "file" in modes:
         _save_client_config(text)
-
     if "qr" in modes:
         _print_qr(text)
 
@@ -168,27 +240,15 @@ def _save_client_config(text):
 
 
 def _print_qr(text):
-    # Try qrencode
     if command_exists("qrencode"):
         try:
-            subprocess.run(
-                ["qrencode", "-t", "ansiutf8"],
-                input=text.encode(),
-                check=True,
-            )
+            subprocess.run(["qrencode", "-t", "ansiutf8"], input=text.encode(), check=True)
             return
         except Exception:
             pass
-
-    # Try to install it
     try:
-        from gimed.system import apt_install
         apt_install("qrencode")
-        subprocess.run(
-            ["qrencode", "-t", "ansiutf8"],
-            input=text.encode(),
-            check=True,
-        )
+        subprocess.run(["qrencode", "-t", "ansiutf8"], input=text.encode(), check=True)
     except Exception:
-        print_warning("Could not generate QR code (qrencode unavailable). Falling back to file output.")
+        print_warning("Could not generate QR code. Falling back to file output.")
         _save_client_config(text)
