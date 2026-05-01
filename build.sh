@@ -10,7 +10,7 @@ BINARY_NAME="gimed-${OS}-${ARCH}"
 BINARY="$DIST_DIR/$BINARY_NAME"
 
 echo "==> Installing build deps..."
-pip install pyinstaller --quiet
+pip install pyinstaller questionary rich --quiet
 
 echo "==> Building binary: $BINARY_NAME ..."
 pyinstaller gimed.spec --distpath "$DIST_DIR" --workpath ./build --clean -y
