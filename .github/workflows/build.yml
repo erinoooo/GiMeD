@@ -25,4 +25,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: gimed-binary
-          path: dist/gimed
+          path: dist/gimed-linux-x86_64
