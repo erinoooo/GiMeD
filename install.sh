@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # GiMeD installer
 # Usage (single liner):
-#   curl -fsSL https://raw.githubusercontent.com/YOUR_ORG/gimed/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/erinoooo/gimed/main/install.sh | sudo bash
 #   OR
-#   wget -qO- https://raw.githubusercontent.com/YOUR_ORG/gimed/main/install.sh | sudo bash
+#   wget -qO- https://raw.githubusercontent.com/erinoooo/gimed/main/install.sh | sudo bash
 #
 # What this does:
 #   1. Checks you're on a supported distro
@@ -14,10 +14,23 @@
 set -euo pipefail
 
 #─────────────────────────────────────────────
-# Config — update these when you publish releases
-REPO="YOUR_ORG/gimed"
-BINARY_URL="https://github.com/${REPO}/releases/latest/download/gimed-linux-x86_64"
+REPO="erinoooo/gimed"
 INSTALL_PATH="/usr/local/bin/gimed"
+
+# Detect architecture and build binary name
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64)  ARCH_TAG="x86_64" ;;
+    aarch64) ARCH_TAG="aarch64" ;;
+    armv7l)  ARCH_TAG="armv7l" ;;
+    *)
+        echo "Unsupported architecture: $ARCH"
+        exit 1
+    ;;
+esac
+
+BINARY_NAME="gimed-linux-${ARCH_TAG}"
+BINARY_URL="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}"
 #─────────────────────────────────────────────
 
 RESET="\033[0m"
@@ -44,7 +57,7 @@ cat << 'EOF'
 EOF
 echo -e "${RESET}"
 echo -e "${BOLD}  Give Me a Desktop — Installer${RESET}"
-echo -e "  https://github.com/${REPO}"
+echo -e "  https://github.com/erinoooo/gimed"
 echo ""
 }
 
@@ -53,7 +66,7 @@ check_root() {
         error "This installer must be run as root."
         echo ""
         echo "  Run with sudo:"
-        echo "    curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash"
+        echo "    curl -fsSL https://raw.githubusercontent.com/erinoooo/gimed/main/install.sh | sudo bash"
         exit 1
     fi
 }

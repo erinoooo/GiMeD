@@ -87,7 +87,7 @@ git clone https://github.com/erinoooo/gimed
 cd gimed
 pip install pyinstaller
 bash build.sh
-# binary → dist/gimed
+# binary → dist/gimed-linux-<arch>  (e.g. dist/gimed-linux-x86_64)
 ```
 
 ---
