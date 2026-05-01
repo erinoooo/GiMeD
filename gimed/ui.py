@@ -97,7 +97,9 @@ class spinner:
         sys.stdout.flush()
 
     def __enter__(self):
-        if sys.stdout.isatty():
+        # Only spin when output is NOT a tty (e.g. piped/logged).
+        # When interactive, a spinner conflicts with input() — just print a step line.
+        if not sys.stdout.isatty():
             self._thread = threading.Thread(target=self._spin, daemon=True)
             self._thread.start()
         else:
@@ -125,6 +127,8 @@ def ask_select(prompt, choices):
     while True:
         try:
             raw = input(_c(DIM, "  Enter number: ")).strip()
+            if not raw:
+                continue  # ignore empty lines silently
             idx = int(raw) - 1
             if 0 <= idx < len(choices):
                 label, value = choices[idx]
@@ -132,8 +136,10 @@ def ask_select(prompt, choices):
                 return label, value
             else:
                 print_warning(f"Please enter a number between 1 and {len(choices)}")
-        except (ValueError, EOFError):
-            print_warning("Invalid input, try again.")
+        except ValueError:
+            print_warning("Please enter a number.")
+        except EOFError:
+            continue  # ignore stray EOF bytes
         except KeyboardInterrupt:
             print()
             print_warning("Interrupted.")
@@ -149,11 +155,15 @@ def ask_input(prompt, default=None, validator=None, error_msg="Invalid input"):
             raw = input(_c(BOLD, f"  {prompt}{hint}: ")).strip()
             if not raw and default is not None:
                 raw = default
+            if not raw:
+                continue  # no default, empty input — silently retry
             if validator and not validator(raw):
                 print_warning(error_msg)
                 continue
             return raw
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
+            continue
+        except KeyboardInterrupt:
             print()
             print_warning("Interrupted.")
             sys.exit(1)
@@ -173,6 +183,8 @@ def ask_confirm(prompt, default=True):
             if raw in ("n", "no"):
                 return False
             print_warning("Please enter y or n.")
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
+            continue
+        except KeyboardInterrupt:
             print()
             sys.exit(1)
