@@ -1,13 +1,12 @@
 """
-GiMeD UI - Terminal UI using InquirerPy + rich
-InquirerPy handles piped stdin, sudo, SSH, and non-tty environments correctly.
+GiMeD UI - Terminal UI using simple-term-menu + rich
+simple-term-menu works reliably over SSH and sudo with no stdin/tty issues.
 """
 
 import sys
 from contextlib import contextmanager
 
-from InquirerPy import inquirer
-from InquirerPy.base.control import Choice
+from simple_term_menu import TerminalMenu
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -74,52 +73,64 @@ def ask_select(prompt, choices):
     choices: list of (label, value) tuples
     Returns (label, value) of selected item.
     """
-    result = inquirer.select(
-        message=prompt,
-        choices=[Choice(value=value, name=label) for label, value in choices],
-        mandatory=True,
-    ).execute()
+    console.print(f"\n  [bold]{prompt}[/]\n")
+    labels = [label for label, _ in choices]
 
-    if result is None:
+    menu = TerminalMenu(
+        labels,
+        title=None,
+        menu_cursor="► ",
+        menu_cursor_style=("fg_cyan", "bold"),
+        menu_highlight_style=("fg_cyan", "bold"),
+        cycle_cursor=True,
+        clear_screen=False,
+    )
+    idx = menu.show()
+
+    if idx is None:
         print_warning("Interrupted.")
         sys.exit(1)
 
-    label = next(label for label, value in choices if value == result)
+    label, value = choices[idx]
     print_success(f"Selected: {label.split('—')[0].strip()}")
-    return label, result
+    return label, value
 
 
 def ask_input(prompt, default=None, validator=None, error_msg="Invalid input"):
-    def _validate(val):
-        if not val and default is None:
-            return False
-        if val and validator and not validator(val):
-            return False
-        return True
+    hint = f" [{default}]" if default else ""
+    console.print(f"\n  [bold]{prompt}{hint}:[/] ", end="")
 
-    result = inquirer.text(
-        message=prompt,
-        default=default or "",
-        validate=_validate,
-        invalid_message=error_msg,
-        mandatory=True,
-    ).execute()
-
-    if result is None:
-        print_warning("Interrupted.")
-        sys.exit(1)
-
-    return result if result else default
+    while True:
+        try:
+            raw = input().strip()
+            if not raw and default is not None:
+                return default
+            if not raw:
+                console.print(f"  [yellow]Please enter a value:[/] ", end="")
+                continue
+            if validator and not validator(raw):
+                console.print(f"  [yellow]{error_msg}:[/] ", end="")
+                continue
+            return raw
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(1)
 
 
 def ask_confirm(prompt, default=True):
-    result = inquirer.confirm(
-        message=prompt,
-        default=default,
-        mandatory=True,
-    ).execute()
+    hint = "Y/n" if default else "y/N"
+    console.print(f"\n  [bold]{prompt} [{hint}]:[/] ", end="")
 
-    if result is None:
-        sys.exit(1)
-
-    return result
+    while True:
+        try:
+            raw = input().strip().lower()
+            if not raw:
+                return default
+            if raw in ("y", "yes"):
+                return True
+            if raw in ("n", "no"):
+                return False
+            console.print(f"  [yellow]Please enter y or n:[/] ", end="")
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(1)

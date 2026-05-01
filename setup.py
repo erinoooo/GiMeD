@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="gimed",
-    version="1.5.0",
+    version="0.1.0",
     description="Give Me a Desktop — headless Linux desktop setup tool",
     packages=find_packages(),
     python_requires=">=3.8",
@@ -12,7 +12,7 @@ setup(
         ],
     },
     install_requires=[
-        "InquirerPy>=0.3.4",
+        "simple-term-menu>=1.6",
         "rich>=13.0",
     ],
 )
