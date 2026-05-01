@@ -1,6 +1,4 @@
 # gimed.spec — PyInstaller build spec
-# Usage: pyinstaller gimed.spec
-
 block_cipher = None
 
 a = Analysis(
@@ -15,15 +13,26 @@ a = Analysis(
         'gimed.desktop',
         'gimed.xrdp',
         'gimed.wireguard',
-        # questionary + prompt_toolkit internals
-        'questionary',
+        # InquirerPy
+        'InquirerPy',
+        'InquirerPy.base',
+        'InquirerPy.base.control',
+        'InquirerPy.prompts',
+        'InquirerPy.prompts.list',
+        'InquirerPy.prompts.input',
+        'InquirerPy.prompts.confirm',
+        'InquirerPy.resolver',
+        'pfzy',
+        # prompt_toolkit (InquirerPy dependency)
         'prompt_toolkit',
         'prompt_toolkit.input',
+        'prompt_toolkit.input.vt100',
         'prompt_toolkit.output',
+        'prompt_toolkit.output.vt100',
         'prompt_toolkit.filters',
         'prompt_toolkit.key_binding',
         'prompt_toolkit.shortcuts',
-        # rich internals
+        # rich
         'rich',
         'rich.console',
         'rich.panel',
@@ -33,8 +42,6 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
