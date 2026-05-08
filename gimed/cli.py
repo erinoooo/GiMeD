@@ -4,6 +4,7 @@ GiMeD CLI - Interactive TUI for setup
 
 import sys
 import os
+import subprocess
 import time
 
 from gimed.ui import (
@@ -23,6 +24,7 @@ from gimed.system import (
     check_root,
     detect_distro,
     check_supported_distro,
+    run,
 )
 from gimed.desktop import install_desktop
 from gimed.xrdp import install_xrdp, configure_xrdp, generate_ssl_cert
@@ -43,6 +45,78 @@ CLIENT_OUTPUT_CHOICES = [
     ("All of the above", "all"),
 ]
 
+# State file written before reboot, checked on next run
+STATE_FILE = "/var/lib/gimed/state"
+
+
+def _read_state():
+    """Return dict of saved state, or empty dict."""
+    if not os.path.exists(STATE_FILE):
+        return {}
+    state = {}
+    try:
+        with open(STATE_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    state[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return state
+
+
+def _write_state(**kwargs):
+    """Persist key=value pairs to state file."""
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    existing = _read_state()
+    existing.update(kwargs)
+    with open(STATE_FILE, "w") as f:
+        for k, v in existing.items():
+            f.write(f"{k}={v}\n")
+
+
+def _clear_state():
+    try:
+        os.remove(STATE_FILE)
+    except Exception:
+        pass
+
+
+def _do_upgrade_and_reboot(distro):
+    """Run apt update + upgrade, save state, then reboot."""
+    print_section("System Update")
+    print_warning("GiMeD will now update and upgrade the system.")
+    print_warning("The server will reboot automatically when done.")
+    print_warning("Run  sudo gimed  again after the reboot to continue setup.")
+    print_info("")
+
+    if not ask_confirm("Proceed with update + reboot?", default=True):
+        print_warning("Skipping update. Packages may be outdated.")
+        _write_state(upgrade_done="skipped")
+        return
+
+    env = os.environ.copy()
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+
+    with spinner("Running apt update"):
+        subprocess.run(["apt", "update", "-y"], check=True, env=env)
+
+    with spinner("Running apt upgrade"):
+        subprocess.run(
+            ["apt", "upgrade", "-y",
+             "-o", "Dpkg::Options::=--force-confdef",
+             "-o", "Dpkg::Options::=--force-confold"],
+            check=True, env=env,
+        )
+
+    _write_state(upgrade_done="yes")
+
+    print_success("System upgraded. Rebooting in 5 seconds...")
+    print_info("Run  sudo gimed  after the reboot to continue.")
+    time.sleep(5)
+    os.execv("/sbin/reboot", ["reboot"])
+
 
 def main():
     print_banner()
@@ -62,13 +136,30 @@ def main():
         sys.exit(1)
     print_success(f"Detected: {distro['pretty_name']}")
 
+    # ── Upgrade check ──────────────────────────────────────────────────────
+    state = _read_state()
+    upgrade_done = state.get("upgrade_done", "no")
+
+    if upgrade_done == "no":
+        # First run — warn user and offer upgrade + reboot
+        print_section("System Update")
+        print_warning("For the most up-to-date packages, GiMeD recommends")
+        print_warning("running a full system upgrade before installing.")
+        print_info("The system will reboot once, then you run  sudo gimed  again.")
+        print_info("")
+        _do_upgrade_and_reboot(distro)
+        # If user skipped, fall through to setup immediately
+    elif upgrade_done == "yes":
+        print_success("System already upgraded — continuing setup")
+    elif upgrade_done == "skipped":
+        print_warning("Upgrade was skipped — packages may not be latest")
+
     # ── Desktop environment ────────────────────────────────────────────────
     print_section("Desktop Environment")
     de_label, de_key = ask_select(
         "Which desktop environment would you like?",
         DESKTOP_CHOICES,
     )
-    print_info(f"Selected: {de_label.strip()}")
 
     # ── WireGuard config ───────────────────────────────────────────────────
     print_section("WireGuard VPN")
@@ -101,8 +192,8 @@ def main():
 
     # ── Confirm ────────────────────────────────────────────────────────────
     print_section("Ready to Install")
-    print_info(f"  Desktop : {de_label.strip()}")
-    print_info(f"  xrdp    : port 3389, SSL={'yes' if want_ssl else 'no'}")
+    print_info(f"  Desktop  : {de_label.strip()}")
+    print_info(f"  xrdp     : port 3389, SSL={'yes' if want_ssl else 'no'}")
     print_info(f"  WireGuard: UDP {wg_port}, server {wg_server_vpn_ip}, client {wg_client_ip}")
 
     if not ask_confirm("Proceed with installation?", default=True):
@@ -131,7 +222,9 @@ def main():
     print_section("WireGuard Client Configuration")
     output_client_config(wg_config, client_output)
 
-    # ── Done ───────────────────────────────────────────────────────────────
+    # ── Done — clear state so a fresh run works correctly ─────────────────
+    _clear_state()
+
     print_section("All Done!")
     print_success("GiMeD setup complete.")
     print_info("")
