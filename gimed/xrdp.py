@@ -3,27 +3,49 @@ GiMeD XRDP installation and configuration
 """
 
 import os
+import pwd
 import subprocess
-import textwrap
 
 from gimed.system import apt_install, run, systemctl, command_exists
 from gimed.desktop import get_session_cmd
-from gimed.ui import print_step, print_success, print_warning, spinner
+from gimed.ui import print_step, print_success, print_warning, print_info, spinner
 
 XRDP_CONF = "/etc/xrdp/xrdp.ini"
 STARTWM   = "/etc/xrdp/startwm.sh"
 CERT_PATH = "/etc/xrdp/cert.pem"
 KEY_PATH  = "/etc/xrdp/key.pem"
 
+# DE-specific environment for ~/.xsessionrc
+DE_ENV = {
+    "xfce": {
+        "XDG_CURRENT_DESKTOP": "XFCE",
+        "XDG_DATA_DIRS": "/usr/share/xfce4:/usr/share/xubuntu:/usr/local/share:/usr/share:/var/lib/snapd/desktop",
+    },
+    "mate": {
+        "XDG_CURRENT_DESKTOP": "MATE",
+        "XDG_DATA_DIRS": "/usr/share/mate:/usr/local/share:/usr/share:/var/lib/snapd/desktop",
+    },
+    "lxde": {
+        "XDG_CURRENT_DESKTOP": "LXDE",
+        "XDG_DATA_DIRS": "/usr/share/lxde:/usr/local/share:/usr/share:/var/lib/snapd/desktop",
+    },
+    "lxqt": {
+        "XDG_CURRENT_DESKTOP": "LXQt",
+        "XDG_DATA_DIRS": "/usr/share/lxqt:/usr/local/share:/usr/share:/var/lib/snapd/desktop",
+    },
+}
+
 
 def install_xrdp(distro):
     with spinner("Installing xrdp"):
-        apt_install("xrdp", "xorgxrdp")
+        # dbus-x11 is required on Ubuntu 24.04+ for sessions to spawn dbus correctly.
+        # Without it, the DE crashes immediately after login.
+        apt_install("xrdp", "xorgxrdp", "dbus-x11")
 
     with spinner("Enabling xrdp service"):
         systemctl("enable", "xrdp")
 
-    # Add xrdp user to ssl-cert group (needed on Ubuntu/Debian)
+    # xrdp needs to read SSL certs which live in the ssl-cert group
     try:
         run(["usermod", "-aG", "ssl-cert", "xrdp"], check=False)
     except Exception:
@@ -35,11 +57,12 @@ def install_xrdp(distro):
 def configure_xrdp(de_key):
     session_cmd = get_session_cmd(de_key)
 
-    # Write ~/.xsession for root and any existing human users
-    _write_xsession(session_cmd, "/root/.xsession")
+    # Write proper xsession files for root + every human user with a real shell.
+    # ~/.xsessionrc sets up env (XDG vars), ~/.xsession execs the DE.
+    _write_xsession_for_all_users(de_key, session_cmd)
 
-    # Also patch startwm.sh so it works for all users connecting via xrdp
-    _patch_startwm(session_cmd)
+    # Patch /etc/xrdp/startwm.sh as a system-wide fallback
+    _patch_startwm(de_key, session_cmd)
 
     with spinner("Restarting xrdp"):
         systemctl("restart", "xrdp")
@@ -47,34 +70,83 @@ def configure_xrdp(de_key):
     print_success(f"xrdp configured to launch {de_key.upper()}")
 
 
-def _write_xsession(session_cmd, path):
-    content = f"#!/bin/sh\nexec {session_cmd}\n"
-    with open(path, "w") as f:
-        f.write(content)
-    os.chmod(path, 0o755)
+def _write_xsession_for_all_users(de_key, session_cmd):
+    """
+    Write ~/.xsessionrc + ~/.xsession for root and every real user
+    (UID 1000+ with a valid shell) so xrdp sessions launch correctly.
+    """
+    targets = [("/root", 0, 0)]
+
+    # Find human users on the system
+    for user in pwd.getpwall():
+        if user.pw_uid >= 1000 and user.pw_uid < 65534:
+            shell = user.pw_shell or ""
+            if shell.endswith(("nologin", "false")):
+                continue
+            targets.append((user.pw_dir, user.pw_uid, user.pw_gid))
+
+    for home, uid, gid in targets:
+        if not os.path.isdir(home):
+            continue
+        _write_user_xsession(home, uid, gid, de_key, session_cmd)
 
 
-def _patch_startwm(session_cmd):
-    """
-    Replace the exec lines at the end of startwm.sh with our DE's session command.
-    Keeps the environment setup at the top intact.
-    """
-    if not os.path.exists(STARTWM):
-        content = f"#!/bin/sh\nexec {session_cmd}\n"
-        with open(STARTWM, "w") as f:
+def _write_user_xsession(home, uid, gid, de_key, session_cmd):
+    env = DE_ENV.get(de_key, {})
+    rc_path = os.path.join(home, ".xsessionrc")
+    sess_path = os.path.join(home, ".xsession")
+
+    rc_content = "#!/bin/sh\n"
+    for k, v in env.items():
+        rc_content += f'export {k}="{v}"\n'
+    rc_content += "export GNOME_SHELL_SESSION_MODE=\n"
+
+    sess_content = f"#!/bin/sh\nexec {session_cmd}\n"
+
+    for path, content in ((rc_path, rc_content), (sess_path, sess_content)):
+        with open(path, "w") as f:
             f.write(content)
-        os.chmod(STARTWM, 0o755)
-        return
+        os.chmod(path, 0o755)
+        try:
+            os.chown(path, uid, gid)
+        except Exception:
+            pass
 
-    with open(STARTWM) as f:
-        lines = f.readlines()
 
-    # Strip any existing exec lines and append ours
-    filtered = [l for l in lines if not l.strip().startswith("exec ")]
-    filtered.append(f"\nexec {session_cmd}\n")
+def _patch_startwm(de_key, session_cmd):
+    """
+    Rewrite /etc/xrdp/startwm.sh so it sources ~/.xsessionrc, sets the env,
+    and execs the DE. This is the fallback path for users without ~/.xsession.
+    """
+    env = DE_ENV.get(de_key, {})
+    env_lines = "\n".join(f'export {k}="{v}"' for k, v in env.items())
 
+    new_startwm = f"""#!/bin/sh
+# Generated by GiMeD
+
+if test -r /etc/profile; then
+    . /etc/profile
+fi
+
+if test -r ~/.profile; then
+    . ~/.profile
+fi
+
+# Source user xsessionrc if present (per-user env overrides)
+if test -r ~/.xsessionrc; then
+    . ~/.xsessionrc
+fi
+
+# DE environment (fallback if ~/.xsessionrc was not loaded)
+{env_lines}
+export GNOME_SHELL_SESSION_MODE=
+
+# Launch the desktop
+test -x /etc/X11/Xsession && exec /etc/X11/Xsession "{session_cmd}"
+exec {session_cmd}
+"""
     with open(STARTWM, "w") as f:
-        f.writelines(filtered)
+        f.write(new_startwm)
     os.chmod(STARTWM, 0o755)
 
 
@@ -92,14 +164,12 @@ def generate_ssl_cert():
             "-subj",   f"/CN={hostname}",
         ])
 
-    # Fix ownership
     try:
         run(["chown", "xrdp:xrdp", CERT_PATH, KEY_PATH], check=False)
     except Exception:
         pass
     os.chmod(KEY_PATH, 0o600)
 
-    # Point xrdp.ini at the new certs
     _patch_xrdp_ini_certs()
 
     with spinner("Restarting xrdp after cert update"):
